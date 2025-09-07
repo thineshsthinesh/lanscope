@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LanScope - Advanced Network Visualizer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Subnet Configuration Modal -->
+    <div id="subnet-modal" class="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 class="modal-title">Configure Network Scan</h2>
+                <button class="close-btn" id="close-modal">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label" for="subnet-input">Target Subnet (CIDR Notation)</label>
+                <input type="text" id="subnet-input" class="form-input" placeholder="192.168.1.0/24" value="">
+                <div class="subnet-size-indicator" id="subnet-info">Enter a subnet in CIDR notation (e.g., 192.168.0.0/16)</div>
+                
+                <div class="subnet-presets">
+                    <button class="preset-btn" data-subnet="192.168.1.0/24">/24 - Home</button>
+                    <button class="preset-btn" data-subnet="192.168.0.0/16">/16 - Large</button>
+                    <button class="preset-btn" data-subnet="10.0.0.0/16">/16 - Corp</button>
+                    <button class="preset-btn" data-subnet="172.16.0.0/20">/20 - Medium</button>
+                    <button class="preset-btn" data-subnet="10.0.0.0/8">/8 - Enterprise</button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Scan Type</label>
+                <div class="scan-options">
+                    <div class="option-card selected" data-scan-type="intelligent">
+                        <div class="option-title">
+                            <i class="fas fa-brain"></i> Intelligent
+                        </div>
+                        <div class="option-description">
+                            Smart sampling for large networks. Focuses on common IP ranges and infrastructure devices.
+                        </div>
+                    </div>
+                    <div class="option-card" data-scan-type="comprehensive">
+                        <div class="option-title">
+                            <i class="fas fa-search"></i> Comprehensive
+                        </div>
+                        <div class="option-description">
+                            Scans every host in the subnet. Recommended only for /24 or smaller networks.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="max-hosts">Maximum Hosts to Scan</label>
+                <select id="max-hosts" class="form-input form-select">
+                    <option value="1000">1,000 hosts (Fast)</option>
+                    <option value="5000" selected>5,000 hosts (Balanced)</option>
+                    <option value="10000">10,000 hosts (Thorough)</option>
+                    <option value="20000">20,000 hosts (Extensive)</option>
+                    <option value="65534">All hosts (Full scan)</option>
+                </select>
+            </div>
+
+            <div class="progress-section" id="scan-progress-section">
+                <h3 style="margin-bottom: 1rem;">Scan Progress</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="modal-progress-fill"></div>
+                </div>
+                <div class="progress-info">
+                    <div class="progress-stat">
+                        <div class="progress-value" id="hosts-scanned">0</div>
+                        <div class="progress-label">Hosts Scanned</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-value" id="devices-found">0</div>
+                        <div class="progress-label">Devices Found</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-value" id="current-subnet">--</div>
+                        <div class="progress-label">Current Subnet</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-value" id="scan-eta">--</div>
+                        <div class="progress-label">ETA</div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 1rem; margin-top: 2rem;">
+                <button id="start-scan-btn" class="btn btn-primary" style="flex: 1;">
+                    <i class="fas fa-play"></i>
+                    Start Scan
+                </button>
+                <button id="cancel-scan-btn" class="btn btn-secondary">
+                    <i class="fas fa-times"></i>
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="logo">
+            <i class="fas fa-network-wired"></i>
+            <span>LanScope Advanced</span>
+        </div>
+        
+        <div class="status-panel">
+            <div class="status-indicator">
+                <div id="status-dot" class="status-dot connecting"></div>
+                <span id="status-text">Connecting...</span>
+            </div>
+            
+            <div class="scan-controls">
+                <button id="configure-scan-btn" class="btn btn-primary">
+                    <i class="fas fa-cogs"></i>
+                    Configure Scan
+                </button>
+                <button id="refresh-btn" class="btn btn-secondary">
+                    <i class="fas fa-sync-alt"></i>
+                    Quick Refresh
+                </button>
+                <button id="export-btn" class="btn btn-secondary">
+                    <i class="fas fa-download"></i>
+                    Export
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Network Graph -->
+        <div class="graph-container">
+            <div id="cy"></div>
+            
+            <!-- Graph Controls -->
+            <div class="graph-controls">
+                <button id="zoom-in" class="control-btn" title="Zoom In">
+                    <i class="fas fa-plus"></i>
+                </button>
+                <button id="zoom-out" class="control-btn" title="Zoom Out">
+                    <i class="fas fa-minus"></i>
+                </button>
+                <button id="center" class="control-btn" title="Center View">
+                    <i class="fas fa-crosshairs"></i>
+                </button>
+                <button id="fullscreen" class="control-btn" title="Toggle Fullscreen">
+                    <i class="fas fa-expand"></i>
+                </button>
+            </div>
+
+            <!-- Network Info Bar -->
+            <div class="network-info-bar">
+                <div class="network-info">
+                    <div class="network-detail">
+                        <i class="fas fa-globe"></i>
+                        <span id="interface-info">eth0</span>
+                    </div>
+                    <div class="network-detail">
+                        <i class="fas fa-network-wired"></i>
+                        <span id="current-network">Auto-detecting...</span>
+                    </div>
+                    <div class="network-detail">
+                        <i class="fas fa-clock"></i>
+                        <span id="scan-duration">--</span>
+                    </div>
+                </div>
+                
+                <div class="scan-progress" id="bottom-progress">
+                    <div class="mini-progress">
+                        <div class="mini-progress-fill" id="bottom-progress-fill"></div>
+                    </div>
+                    <span id="bottom-progress-text">Scanning...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Side Panel -->
+        <aside class="side-panel">
+            <div class="panel-header">
+                <div class="device-icon">
+                    <i class="fas fa-info-circle"></i>
+                </div>
+                <div>
+                    <h2 class="panel-title">Device Details</h2>
+                    <p style="font-size: 0.875rem; color: var(--text-secondary);">Click on a device to view details</p>
+                </div>
+            </div>
+
+            <div id="device-details" class="device-details empty">
+                <i class="fas fa-mouse-pointer" style="font-size: 3rem; color: var(--text-secondary); margin-bottom: 1rem;"></i>
+                <p>Select a device from the network graph to view its information</p>
+            </div>
+
+            <!-- Statistics Panel -->
+            <div class="stats-panel">
+                <h3 style="margin-bottom: 1rem; color: var(--text-primary);">Network Statistics</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div id="total-devices" class="stat-value">0</div>
+                        <div class="stat-label">Total Devices</div>
+                    </div>
+                    <div class="stat-item">
+                        <div id="online-devices" class="stat-value">0</div>
+                        <div class="stat-label">Online</div>
+                    </div>
+                    <div class="stat-item">
+                        <div id="open-ports" class="stat-value">0</div>
+                        <div class="stat-label">Open Ports</div>
+                    </div>
+                    <div class="stat-item">
+                        <div id="scan-time" class="stat-value">--</div>
+                        <div class="stat-label">Last Scan</div>
+                    </div>
+                </div>
+                
+                <!-- Enhanced Statistics for Large Networks -->
+                <div style="margin-top: 1rem;">
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div id="subnet-coverage" class="stat-value">0%</div>
+                            <div class="stat-label">Subnet Coverage</div>
+                        </div>
+                        <div class="stat-item">
+                            <div id="active-subnets" class="stat-value">0</div>
+                            <div class="stat-label">Active Subnets</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.29.2/cytoscape.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

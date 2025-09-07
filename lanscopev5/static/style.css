@@ -1,0 +1,35 @@
+/* lanscope/static/css/style.css */
+
+/* Make the main row fill the viewport height */
+.main-row {
+    height: calc(100vh - 56px); /* Full viewport height minus the navbar height */
+}
+
+/* Ensure the card containing the graph expands */
+.graph-card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* Make the card body (which contains #cy) grow to fill the available space */
+.graph-card .card-body {
+    flex-grow: 1;
+    position: relative; /* Needed for Cytoscape container */
+}
+
+/* Ensure the Cytoscape container fills its parent card-body */
+#cy {
+    width: 100%;
+    height: 100%;
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+/* Allow the info panel to scroll if content overflows */
+#node-info {
+    max-height: 85vh;
+    overflow-y: auto;
+}
