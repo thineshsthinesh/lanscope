@@ -13,7 +13,7 @@ A web-based tool for scanning and visualizing network topology. It performs **cu
 
 ## 🖥️ Screenshots
 ### Dashboard
-![Dashboard Screenshot](screenshots/dashboard.png)
+![Dashboard Screenshot](https://github.com/thineshsthinesh/external/blob/main/Screenshot%202025-09-28%20184803.png)
 
 ### Topology Graph
 ![Topology Screenshot](screenshots/topology.png)
