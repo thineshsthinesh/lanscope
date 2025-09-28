@@ -15,11 +15,6 @@ A web-based tool for scanning and visualizing network topology. It performs **cu
 ### Dashboard
 ![Dashboard Screenshot](https://github.com/thineshsthinesh/external/blob/main/Screenshot%202025-09-28%20184803.png)
 
-### Topology Graph
-![Topology Screenshot](screenshots/topology.png)
-
-> 📌 Place screenshots in a `screenshots/` folder inside your repo for them to render.
-
 ## ⚙️ Requirements
 - Python **3.8+**  
 - Flask  
