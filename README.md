@@ -1,4 +1,4 @@
-# 🌐 Cumulative Network Topology Scanner
+# 🌐 Lanscope Network Topology Scanner
 A web-based tool for scanning and visualizing network topology. It performs **cumulative scans**, stores results persistently in SQLite, and provides an interactive dashboard to explore discovered hosts, routes, and internet paths.
 
 ## ✨ Features
