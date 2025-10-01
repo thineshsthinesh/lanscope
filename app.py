@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Enhanced Cumulative Network Topology Scanner
+Enhanced Cumulative Network Topology Scanner with Real-Time Traffic Visualization
 - Cumulative scan results like Zenmap
 - Persistent storage of discovered hosts and topology
 - Intelligent merging of multiple scan results
 - Historical scan tracking and comparison
 - Export/Import functionality for scan results
 - Enhanced visualization with draggable nodes and zoom
+- Real-time network traffic visualization with packet capture
 """
 
 from flask import Flask, render_template, send_file, request, jsonify
@@ -35,12 +36,13 @@ class CumulativeTopologyScanner:
         self.active_hosts = {}
         self.host_routes = {}
         self.scan_active = False
+        self.traffic_capture_active = False
         self.cumulative_data = {
-            'hosts': {},           # All discovered hosts across scans
-            'routes': {},          # All discovered routes
-            'links': [],           # All connections
-            'scan_history': [],    # History of scans
-            'node_positions': {}   # Store fixed node positions
+            'hosts': {},
+            'routes': {},
+            'links': [],
+            'scan_history': [],
+            'node_positions': {}
         }
         self.init_database()
         self.load_cumulative_data()
@@ -281,12 +283,10 @@ class CumulativeTopologyScanner:
             # Import hosts
             for ip, host_data in import_data.get('hosts', {}).items():
                 if merge:
-                    # Check if host exists
                     cursor.execute('SELECT scan_count FROM hosts WHERE ip = ?', (ip,))
                     existing = cursor.fetchone()
                     
                     if existing:
-                        # Update existing host
                         cursor.execute('''
                             UPDATE hosts SET 
                             hostname = ?, mac = ?, device_type = ?, 
@@ -297,7 +297,6 @@ class CumulativeTopologyScanner:
                             host_data['last_seen'], host_data.get('scan_count', 1), ip
                         ))
                     else:
-                        # Insert new host
                         cursor.execute('''
                             INSERT INTO hosts 
                             (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active)
@@ -309,7 +308,6 @@ class CumulativeTopologyScanner:
                         ))
                         imported_hosts += 1
                 else:
-                    # Replace mode
                     cursor.execute('''
                         INSERT OR REPLACE INTO hosts 
                         (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active)
@@ -356,7 +354,6 @@ class CumulativeTopologyScanner:
             conn.commit()
             conn.close()
             
-            # Reload cumulative data
             self.load_cumulative_data()
             
             return {
@@ -553,6 +550,124 @@ class CumulativeTopologyScanner:
             print(f"Traceroute error for {ip}: {e}")
             return []
     
+    def capture_network_traffic(self):
+        """Capture real-time network traffic and emit to frontend"""
+        print("Starting traffic capture...")
+        self.traffic_capture_active = True
+        
+        try:
+            # Try to use tcpdump/tshark for traffic capture
+            if sys.platform.startswith('win'):
+                # Windows - requires tshark/WinPcap
+                cmd = ['tshark', '-i', 'any', '-T', 'fields', '-e', 'ip.src', '-e', 'ip.dst', 
+                       '-e', 'frame.protocols', '-e', 'frame.len', '-l']
+            else:
+                # Linux/Mac - requires tcpdump with proper permissions
+                cmd = ['tcpdump', '-i', 'any', '-n', '-l', '-q']
+            
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
+                                     text=True, bufsize=1)
+            
+            for line in process.stdout:
+                if not self.traffic_capture_active:
+                    process.terminate()
+                    break
+                
+                # Parse traffic data
+                traffic_data = self.parse_traffic_line(line)
+                if traffic_data:
+                    self.emit_update('traffic_packet', traffic_data)
+                    
+        except FileNotFoundError:
+            print("Traffic capture tool not found. Install tcpdump (Linux/Mac) or tshark (Windows)")
+            print("Switching to simulated traffic mode...")
+            self.simulate_traffic()
+        except PermissionError:
+            print("Permission denied for packet capture. Try running with sudo/administrator privileges")
+            print("Switching to simulated traffic mode...")
+            self.simulate_traffic()
+        except Exception as e:
+            print(f"Traffic capture error: {e}")
+            print("Switching to simulated traffic mode...")
+            self.simulate_traffic()
+    
+    def parse_traffic_line(self, line):
+        """Parse tcpdump/tshark output line"""
+        try:
+            # Parse tcpdump format: timestamp IP src > dst: protocol
+            ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+            matches = re.findall(ip_pattern, line)
+            
+            if len(matches) >= 2:
+                src_ip = matches[0]
+                dst_ip = matches[1]
+                
+                # Determine protocol
+                protocol = 'TCP'
+                if 'UDP' in line.upper():
+                    protocol = 'UDP'
+                elif 'ICMP' in line.upper():
+                    protocol = 'ICMP'
+                
+                # Estimate packet size
+                size = 64
+                size_match = re.search(r'length (\d+)', line)
+                if size_match:
+                    size = int(size_match.group(1))
+                
+                return {
+                    'source': src_ip,
+                    'target': dst_ip,
+                    'protocol': protocol,
+                    'size': size,
+                    'timestamp': time.time()
+                }
+        except Exception as e:
+            print(f"Parse error: {e}")
+        
+        return None
+    
+    def simulate_traffic(self):
+        """Simulate network traffic when packet capture is unavailable"""
+        import random
+        
+        print("Running in simulated traffic mode...")
+        
+        while self.traffic_capture_active:
+            # Get list of known hosts
+            known_ips = list(self.cumulative_data['hosts'].keys())
+            
+            if len(known_ips) >= 2:
+                # Generate simulated traffic between known hosts
+                src = random.choice(known_ips)
+                dst = random.choice(known_ips)
+                
+                if src != dst:
+                    protocols = ['TCP', 'UDP', 'ICMP', 'HTTP', 'HTTPS', 'DNS']
+                    traffic_data = {
+                        'source': src,
+                        'target': dst,
+                        'protocol': random.choice(protocols),
+                        'size': random.randint(64, 1500),
+                        'timestamp': time.time()
+                    }
+                    self.emit_update('traffic_packet', traffic_data)
+            
+            # Random interval between packets
+            time.sleep(random.uniform(0.1, 0.5))
+    
+    def start_traffic_capture(self):
+        """Start traffic capture in separate thread"""
+        if not self.traffic_capture_active:
+            capture_thread = threading.Thread(target=self.capture_network_traffic)
+            capture_thread.daemon = True
+            capture_thread.start()
+    
+    def stop_traffic_capture(self):
+        """Stop traffic capture"""
+        self.traffic_capture_active = False
+        self.emit_update('traffic_capture_stopped', {'message': 'Traffic capture stopped'})
+    
     def discover_subnet(self, network: str):
         """Subnet discovery with cumulative results"""
         scan_start_time = datetime.now().isoformat()
@@ -577,12 +692,10 @@ class CumulativeTopologyScanner:
                 hosts_to_scan = list(net.hosts())
                 self._scan_hosts_batch(hosts_to_scan)
             
-            # Save scan record
             new_hosts_count = len([ip for ip in self.active_hosts.keys() 
                                  if ip not in self.cumulative_data['hosts']])
             self.save_scan_record(network, scan_start_time, len(self.active_hosts), new_hosts_count)
             
-            # Update scan history
             self.cumulative_data['scan_history'].insert(0, {
                 'network': network,
                 'start_time': scan_start_time,
@@ -625,7 +738,6 @@ class CumulativeTopologyScanner:
                         if is_alive:
                             found_hosts.append(ip)
                             
-                            # Check if this is a new discovery or existing host
                             is_new = ip not in self.cumulative_data['hosts']
                             status = 'NEW' if is_new else 'EXISTING'
                             
@@ -652,7 +764,6 @@ class CumulativeTopologyScanner:
         
         new_hosts_count = 0
         
-        # First pass: Basic host info with cumulative merging
         for i, ip in enumerate(found_hosts):
             if not self.scan_active:
                 break
@@ -661,7 +772,6 @@ class CumulativeTopologyScanner:
             mac = self.get_mac_via_arp(ip)
             device_type = self._detect_device_type(hostname, ip)
             
-            # Check if host is new or existing
             is_new = ip not in self.cumulative_data['hosts']
             if is_new:
                 new_hosts_count += 1
@@ -675,11 +785,9 @@ class CumulativeTopologyScanner:
                 'scan_count': 1 if is_new else self.cumulative_data['hosts'][ip].get('scan_count', 0) + 1
             }
             
-            # Update both current scan and cumulative data
             self.active_hosts[ip] = host_info
             self.cumulative_data['hosts'][ip] = host_info
             
-            # Save to database
             self.save_host_to_db(host_info, is_new)
             
             self.emit_update('host_analyzed', {
@@ -690,10 +798,8 @@ class CumulativeTopologyScanner:
             progress = ((i + 1) / len(found_hosts)) * 50
             self.emit_update('analysis_progress', {'progress': progress})
         
-        # Second pass: Traceroute with cumulative path merging
         self.emit_update('scan_status', {'message': 'Mapping network paths (cumulative mode)...'})
         
-        # Prioritize new hosts and important devices for traceroute
         priority_hosts = []
         regular_hosts = []
         
@@ -706,7 +812,6 @@ class CumulativeTopologyScanner:
             else:
                 regular_hosts.append(ip)
         
-        # Limit traceroutes but prioritize new discoveries
         hosts_to_trace = priority_hosts + regular_hosts[:15]
         
         for i, ip in enumerate(hosts_to_trace):
@@ -720,10 +825,8 @@ class CumulativeTopologyScanner:
             progress = 50 + ((i + 1) / len(hosts_to_trace)) * 50
             self.emit_update('analysis_progress', {'progress': progress})
         
-        # Build cumulative topology
         self._build_cumulative_topology()
         
-        # Emit summary statistics
         self.emit_update('scan_summary', {
             'total_hosts_found': len(found_hosts),
             'new_hosts': new_hosts_count,
@@ -759,10 +862,8 @@ class CumulativeTopologyScanner:
         topology = {'nodes': [], 'links': []}
         added_nodes = set()
         
-        # Local machine as center
         local_ip = self._get_local_ip()
         
-        # Add saved position if available
         local_pos = self.cumulative_data['node_positions'].get(local_ip, {})
         
         topology['nodes'].append({
@@ -774,14 +875,13 @@ class CumulativeTopologyScanner:
             'hop_distance': 0,
             'discovered': True,
             'cumulative': True,
-            'scan_count': 999,  # Always present
+            'scan_count': 999,
             'x': local_pos.get('x'),
             'y': local_pos.get('y'),
             'fixed': local_pos.get('fixed', False)
         })
         added_nodes.add(local_ip)
 
-        # Internet path
         self.emit_update('scan_status', {'message': 'Mapping internet path...'})
         internet_hops = self.traceroute_to_host("8.8.8.8")
         
@@ -842,18 +942,14 @@ class CumulativeTopologyScanner:
                 'cumulative': True
             })
 
-        # Add ALL cumulative hosts (not just current scan)
         for ip, host_info in self.cumulative_data['hosts'].items():
             if ip in added_nodes:
                 continue
                 
-            # Determine if host was found in current scan
             in_current_scan = ip in self.active_hosts
             
-            # Check if we have route data for this host (current or historical)
             route = self.host_routes.get(ip, [])
             if not route:
-                # Try to load from database
                 try:
                     conn = sqlite3.connect(self.db_path)
                     cursor = conn.cursor()
@@ -875,7 +971,6 @@ class CumulativeTopologyScanner:
             host_pos = self.cumulative_data['node_positions'].get(ip, {})
             
             if route:
-                # Add intermediate hops
                 prev_node = local_ip
                 for hop_info in route[:-1]:
                     hop_ip = hop_info['ip']
@@ -909,7 +1004,6 @@ class CumulativeTopologyScanner:
                     })
                     prev_node = hop_ip
                 
-                # Add the final host
                 final_hop = len(route)
                 topology['nodes'].append({
                     'id': ip,
@@ -937,7 +1031,6 @@ class CumulativeTopologyScanner:
                     'cumulative': True
                 })
             else:
-                # Direct connection (assume local subnet)
                 topology['nodes'].append({
                     'id': ip,
                     'ip': ip,
@@ -1006,7 +1099,7 @@ scanner = CumulativeTopologyScanner()
 
 @app.route('/')
 def index():
-    return render_template('cumulative_dashboard.html')
+    return render_template('dashboard.html')
 
 @app.route('/export')
 def export_data():
@@ -1018,7 +1111,6 @@ def export_data():
         if export_data is None:
             return jsonify({'error': 'Failed to export data'}), 500
         
-        # Create temporary file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(export_data, f, indent=2)
             temp_path = f.name
@@ -1044,7 +1136,6 @@ def import_data():
         
         merge_mode = request.form.get('merge', 'true').lower() == 'true'
         
-        # Read and parse JSON data
         file_content = file.read().decode('utf-8')
         import_data = json.loads(file_content)
         
@@ -1090,10 +1181,20 @@ def handle_save_node_position(data):
     if ip and x is not None and y is not None:
         scanner.save_node_position(ip, x, y, fixed)
 
+@socketio.on('start_traffic_capture')
+def handle_start_traffic_capture():
+    """Start real-time traffic capture"""
+    scanner.start_traffic_capture()
+    emit('traffic_capture_started', {'message': 'Traffic capture started'})
+
+@socketio.on('stop_traffic_capture')
+def handle_stop_traffic_capture():
+    """Stop real-time traffic capture"""
+    scanner.stop_traffic_capture()
+
 @socketio.on('connect')
 def handle_connect():
     emit('connected')
-    # Send current cumulative data on connect
     emit('cumulative_loaded', {
         'total_hosts': len(scanner.cumulative_data['hosts']),
         'scan_history': scanner.cumulative_data['scan_history']
@@ -1101,8 +1202,8 @@ def handle_connect():
 
 if __name__ == '__main__':
     os.makedirs('templates', exist_ok=True)
-    print("Enhanced Cumulative Network Topology Scanner")
-    print("============================================")
+    print("Enhanced Cumulative Network Topology Scanner with Traffic Visualization")
+    print("=" * 75)
     print("Features:")
     print("- Cumulative scan results (like Zenmap)")
     print("- Persistent SQLite database storage")
@@ -1111,13 +1212,19 @@ if __name__ == '__main__':
     print("- Export/Import scan data functionality")
     print("- Draggable nodes with persistent positions")
     print("- Zoom and pan capabilities")
+    print("- Real-time network traffic visualization")
     print("")
-    print("Make sure cumulative_dashboard.html is in templates/ folder")
+    print("Make sure dashboard.html is in templates/ folder")
     print("Database will be created as: network_topology.db")
     print("Starting server on http://localhost:5000")
     print("")
     print("Export/Import endpoints:")
     print("- GET /export?positions=true - Export scan data")
     print("- POST /import - Import scan data (multipart/form-data)")
+    print("")
+    print("Traffic Capture:")
+    print("- Requires tcpdump (Linux/Mac) or tshark (Windows)")
+    print("- May require administrator/root privileges")
+    print("- Falls back to simulated traffic if tools unavailable")
     print("")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)
