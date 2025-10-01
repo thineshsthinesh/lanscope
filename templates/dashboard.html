@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cumulative Network Topology Scanner</title>
+    <title>Lanscope Topology Scanner with Traffic Visualization</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <style>
@@ -42,6 +42,22 @@
             text-transform: uppercase;
         }
 
+        .traffic-badge {
+            background: #2ecc71;
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            animation: trafficPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes trafficPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
         .controls {
             display: flex;
             gap: 1rem;
@@ -75,6 +91,7 @@
         .btn-success { background: #2ecc71; color: white; }
         .btn-info { background: #17a2b8; color: white; }
         .btn-danger { background: #dc3545; color: white; }
+        .btn-traffic { background: #9b59b6; color: white; }
         
         button:hover {
             transform: translateY(-1px);
@@ -146,6 +163,32 @@
         .stat-value {
             font-weight: bold;
             color: #4a90e2;
+        }
+
+        .traffic-stats {
+            background: #1a1a2e;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 6px;
+            border-left: 3px solid #9b59b6;
+        }
+
+        .traffic-stats h4 {
+            margin-bottom: 0.5rem;
+            color: #9b59b6;
+        }
+
+        .traffic-control-section {
+            background: #1a1a2e;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 6px;
+            border-left: 3px solid #2ecc71;
+        }
+
+        .traffic-control-section h4 {
+            margin-bottom: 0.5rem;
+            color: #2ecc71;
         }
 
         .export-import-section {
@@ -336,6 +379,41 @@
             to { stroke-dashoffset: -12; }
         }
 
+        /* Traffic Particle Styles */
+        .traffic-particle {
+            pointer-events: none;
+        }
+
+        .traffic-particle.TCP {
+            fill: #3498db;
+            stroke: #2980b9;
+            stroke-width: 1;
+        }
+
+        .traffic-particle.UDP {
+            fill: #e74c3c;
+            stroke: #c0392b;
+            stroke-width: 1;
+        }
+
+        .traffic-particle.ICMP {
+            fill: #f39c12;
+            stroke: #d68910;
+            stroke-width: 1;
+        }
+
+        .traffic-particle.HTTP, .traffic-particle.HTTPS {
+            fill: #2ecc71;
+            stroke: #27ae60;
+            stroke-width: 1;
+        }
+
+        .traffic-particle.DNS {
+            fill: #9b59b6;
+            stroke: #8e44ad;
+            stroke-width: 1;
+        }
+
         .node-label {
             fill: white;
             font-size: 11px;
@@ -453,6 +531,8 @@
             border-radius: 8px;
             font-size: 0.8rem;
             border: 1px solid #0f4c75;
+            max-height: 60vh;
+            overflow-y: auto;
         }
 
         .legend h4 {
@@ -495,6 +575,12 @@
         .legend-circle.new { border-color: #2ecc71; background: #2ecc71; }
         .legend-circle.current { border-color: #e94560; background: #e94560; }
         .legend-circle.inactive { border-color: #666; background: none; }
+
+        .legend-circle.TCP { background: #3498db; border-color: #3498db; }
+        .legend-circle.UDP { background: #e74c3c; border-color: #e74c3c; }
+        .legend-circle.ICMP { background: #f39c12; border-color: #f39c12; }
+        .legend-circle.HTTP { background: #2ecc71; border-color: #2ecc71; }
+        .legend-circle.DNS { background: #9b59b6; border-color: #9b59b6; }
 
         .scan-summary {
             position: absolute;
@@ -578,10 +664,12 @@
         <h2>
             Network Topology Scanner 
             <span class="cumulative-badge">Cumulative</span>
+            <span class="traffic-badge" id="traffic-badge" style="display: none;">Live Traffic</span>
         </h2>
         <div class="controls">
             <input type="text" id="network-input" placeholder="192.168.1.0/24" value="192.168.1.0/24">
             <button class="btn-primary" id="scan-btn" onclick="toggleScan()">Start Scan</button>
+            <button class="btn-traffic" id="traffic-btn" onclick="toggleTraffic()">Start Traffic Capture</button>
             <button class="btn-secondary" onclick="resetView()">Reset View</button>
         </div>
     </div>
@@ -615,6 +703,46 @@
                 <div class="stat-item">
                     <span>Status:</span>
                     <span class="stat-value" id="scan-status">Ready</span>
+                </div>
+            </div>
+
+            <div class="traffic-control-section">
+                <h4>Traffic Visualization</h4>
+                <p style="font-size: 0.8rem; color: #ccc; margin-bottom: 0.5rem;">
+                    Capture and visualize network packets in real-time
+                </p>
+                <button class="btn-traffic" id="traffic-control-btn" onclick="toggleTraffic()">
+                    Start Traffic Capture
+                </button>
+            </div>
+
+            <div class="traffic-stats" id="traffic-stats" style="display: none;">
+                <h4>Traffic Statistics</h4>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <span>Packets:</span>
+                        <span class="stat-value" id="packet-count">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span>Rate:</span>
+                        <span class="stat-value" id="packet-rate">0/s</span>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <span>TCP:</span>
+                    <span class="stat-value" id="tcp-count">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>UDP:</span>
+                    <span class="stat-value" id="udp-count">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>ICMP:</span>
+                    <span class="stat-value" id="icmp-count">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>Other:</span>
+                    <span class="stat-value" id="other-count">0</span>
                 </div>
             </div>
 
@@ -707,6 +835,30 @@
                         <span>Previous Scan</span>
                     </div>
                 </div>
+
+                <div class="legend-section" id="traffic-legend" style="display: none;">
+                    <strong>Traffic Types</strong>
+                    <div class="legend-item">
+                        <div class="legend-circle TCP"></div>
+                        <span>TCP</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-circle UDP"></div>
+                        <span>UDP</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-circle ICMP"></div>
+                        <span>ICMP</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-circle HTTP"></div>
+                        <span>HTTP/HTTPS</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-circle DNS"></div>
+                        <span>DNS</span>
+                    </div>
+                </div>
                 
                 <div class="legend-section">
                     <strong>Controls</strong>
@@ -742,6 +894,7 @@
     <script>
         let socket;
         let isScanning = false;
+        let isTrafficCapturing = false;
         let hosts = new Map();
         let cumulativeHosts = new Map();
         let topology = { nodes: [], links: [] };
@@ -750,6 +903,21 @@
         let zoom;
         let svg;
         let g;
+        let trafficParticlesGroup;
+        
+        // Traffic statistics
+        let trafficStats = {
+            total: 0,
+            TCP: 0,
+            UDP: 0,
+            ICMP: 0,
+            HTTP: 0,
+            HTTPS: 0,
+            DNS: 0,
+            other: 0,
+            lastSecond: 0,
+            lastUpdate: Date.now()
+        };
 
         // Connect to backend
         function initConnection() {
@@ -773,7 +941,6 @@
                 updateStatus(`Cumulative scan started: ${data.target}...`);
                 document.getElementById('network-info').textContent = data.target;
                 
-                // Reset current scan counters
                 document.getElementById('current-count').textContent = '0';
                 document.getElementById('new-count').textContent = '0';
             });
@@ -811,7 +978,6 @@
 
             socket.on('scan_summary', (data) => {
                 showScanSummary(data);
-                // Add to history
                 scanHistory.unshift({
                     network: document.getElementById('network-input').value,
                     hosts_found: data.total_hosts_found,
@@ -839,6 +1005,30 @@
                 updateStats();
                 updateStatus('All cumulative data cleared - Starting fresh');
             });
+
+            // Traffic capture events
+            socket.on('traffic_capture_started', (data) => {
+                isTrafficCapturing = true;
+                updateTrafficButton();
+                document.getElementById('traffic-badge').style.display = 'inline-block';
+                document.getElementById('traffic-stats').style.display = 'block';
+                document.getElementById('traffic-legend').style.display = 'block';
+                showNotification('Traffic capture started', 'success');
+                updateStatus('Traffic capture active - Visualizing network packets');
+            });
+
+            socket.on('traffic_capture_stopped', (data) => {
+                isTrafficCapturing = false;
+                updateTrafficButton();
+                document.getElementById('traffic-badge').style.display = 'none';
+                showNotification('Traffic capture stopped', 'info');
+                updateStatus('Traffic capture stopped');
+            });
+
+            socket.on('traffic_packet', (data) => {
+                animateTrafficPacket(data);
+                updateTrafficStats(data.protocol);
+            });
         }
 
         function toggleScan() {
@@ -853,6 +1043,79 @@
             }
         }
 
+        function toggleTraffic() {
+            if (isTrafficCapturing) {
+                socket.emit('stop_traffic_capture');
+            } else {
+                socket.emit('start_traffic_capture');
+            }
+        }
+
+        function updateTrafficButton() {
+            const btn = document.getElementById('traffic-btn');
+            const ctrlBtn = document.getElementById('traffic-control-btn');
+            const text = isTrafficCapturing ? 'Stop Traffic Capture' : 'Start Traffic Capture';
+            const className = isTrafficCapturing ? 'btn-danger' : 'btn-traffic';
+            
+            btn.textContent = text;
+            btn.className = className;
+            ctrlBtn.textContent = text;
+            ctrlBtn.className = className;
+        }
+
+        function updateTrafficStats(protocol) {
+            trafficStats.total++;
+            trafficStats.lastSecond++;
+            
+            if (trafficStats[protocol]) {
+                trafficStats[protocol]++;
+            } else {
+                trafficStats.other++;
+            }
+            
+            // Update display
+            document.getElementById('packet-count').textContent = trafficStats.total;
+            document.getElementById('tcp-count').textContent = trafficStats.TCP;
+            document.getElementById('udp-count').textContent = trafficStats.UDP;
+            document.getElementById('icmp-count').textContent = trafficStats.ICMP;
+            document.getElementById('other-count').textContent = trafficStats.other + trafficStats.HTTP + trafficStats.HTTPS + trafficStats.DNS;
+            
+            // Calculate rate every second
+            const now = Date.now();
+            if (now - trafficStats.lastUpdate >= 1000) {
+                document.getElementById('packet-rate').textContent = trafficStats.lastSecond + '/s';
+                trafficStats.lastSecond = 0;
+                trafficStats.lastUpdate = now;
+            }
+        }
+
+        function animateTrafficPacket(packetData) {
+            if (!g || !trafficParticlesGroup) return;
+            
+            // Find source and target nodes
+            const sourceNode = topology.nodes.find(n => n.ip === packetData.source);
+            const targetNode = topology.nodes.find(n => n.ip === packetData.target);
+            
+            if (!sourceNode || !targetNode) return;
+            
+            // Create particle
+            const particle = trafficParticlesGroup.append('circle')
+                .attr('class', `traffic-particle ${packetData.protocol}`)
+                .attr('r', Math.min(3 + packetData.size / 200, 8))
+                .attr('cx', sourceNode.x)
+                .attr('cy', sourceNode.y);
+            
+            // Animate particle along the path
+            particle.transition()
+                .duration(1000)
+                .ease(d3.easeLinear)
+                .attr('cx', targetNode.x)
+                .attr('cy', targetNode.y)
+                .on('end', function() {
+                    d3.select(this).remove();
+                });
+        }
+
         function clearCumulativeData() {
             if (confirm('Are you sure you want to clear ALL cumulative scan data? This cannot be undone.')) {
                 socket.emit('clear_cumulative');
@@ -864,7 +1127,6 @@
             const includePositions = document.getElementById('include-positions').checked;
             const url = `/export?positions=${includePositions}`;
             
-            // Create a temporary link to trigger download
             const a = document.createElement('a');
             a.href = url;
             a.download = `network_topology_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
@@ -900,7 +1162,6 @@
             .then(data => {
                 if (data.success) {
                     showNotification(data.message, 'success');
-                    // Reload the page to refresh all data
                     setTimeout(() => {
                         location.reload();
                     }, 2000);
@@ -912,7 +1173,6 @@
                 showNotification(`Import error: ${error.message}`, 'error');
             });
 
-            // Reset file input
             event.target.value = '';
         }
 
@@ -991,14 +1251,12 @@
             document.getElementById('cumulative-count').textContent = cumulativeHosts.size;
             document.getElementById('current-count').textContent = hosts.size;
             
-            // Count new hosts in current scan
             let newCount = 0;
             hosts.forEach(host => {
                 if (host.new) newCount++;
             });
             document.getElementById('new-count').textContent = newCount;
             
-            // Calculate max hops from topology
             let maxHops = 0;
             if (topology.nodes.length > 0) {
                 maxHops = Math.max(...topology.nodes.map(n => n.hop_distance || 0));
@@ -1017,7 +1275,7 @@
             }
 
             let html = '';
-            scanHistory.slice(0, 5).forEach(scan => { // Show last 5 scans
+            scanHistory.slice(0, 5).forEach(scan => {
                 html += `
                     <div class="history-item">
                         <div class="history-network">${scan.network}</div>
@@ -1041,10 +1299,8 @@
                 return;
             }
 
-            // Sort hosts by scan recency and hop distance
             let sortedHosts = Array.from(cumulativeHosts.entries());
             
-            // Get hop distances from topology if available
             const hopDistances = new Map();
             if (topology.nodes.length > 0) {
                 topology.nodes.forEach(node => {
@@ -1053,22 +1309,18 @@
                     }
                 });
                 
-                // Sort by: new hosts first, then current scan, then by hop distance
                 sortedHosts.sort((a, b) => {
                     const hostA = a[1];
                     const hostB = b[1];
                     
-                    // New hosts first
                     if (hostA.new && !hostB.new) return -1;
                     if (!hostA.new && hostB.new) return 1;
                     
-                    // Current scan hosts next
                     const inCurrentA = hosts.has(a[0]);
                     const inCurrentB = hosts.has(b[0]);
                     if (inCurrentA && !inCurrentB) return -1;
                     if (!inCurrentA && inCurrentB) return 1;
                     
-                    // Then by hop distance
                     const hopsA = hopDistances.get(a[0]) || 1;
                     const hopsB = hopDistances.get(b[0]) || 1;
                     return hopsA - hopsB;
@@ -1132,7 +1384,6 @@
 
             if (topology.nodes.length === 0) return;
 
-            // Setup zoom behavior
             zoom = d3.zoom()
                 .scaleExtent([0.1, 4])
                 .on("zoom", function(event) {
@@ -1141,39 +1392,35 @@
 
             svg.call(zoom);
 
-            // Create main group for all elements
             g = svg.append("g");
 
-            // Enhanced force simulation with hop-based positioning and saved positions
+            // Create traffic particles group (on top layer)
+            trafficParticlesGroup = g.append("g").attr("class", "traffic-particles");
+
             const centerX = width / 2;
             const centerY = height / 2;
             const hopRadius = Math.min(width, height) * 0.08;
 
-            // Pre-position nodes based on saved positions or hop distance
             topology.nodes.forEach((node, i) => {
                 const hopDistance = node.hop_distance || 0;
                 
-                // Use saved position if available and not dragging
                 if (node.x !== undefined && node.y !== undefined && node.fixed) {
                     node.fx = node.x;
                     node.fy = node.y;
                 } else if (hopDistance === 0) {
-                    // Local machine at center
                     node.x = centerX;
                     node.y = centerY;
                     if (node.device_type === 'local_machine') {
-                        node.fx = centerX; // Fix local machine position
+                        node.fx = centerX;
                         node.fy = centerY;
                     }
                 } else {
-                    // Position nodes in concentric circles based on hop distance
                     const radius = hopDistance * hopRadius;
                     const nodesAtThisHop = topology.nodes.filter(n => n.hop_distance === hopDistance);
                     const nodeIndex = nodesAtThisHop.indexOf(node);
                     const totalAtHop = nodesAtThisHop.length;
                     
                     if (totalAtHop === 1) {
-                        // Single node - position based on type
                         if (node.device_type === 'internet') {
                             node.x = centerX;
                             node.y = centerY - radius;
@@ -1182,7 +1429,6 @@
                             node.y = centerY;
                         }
                     } else {
-                        // Multiple nodes - distribute around circle
                         const angle = (2 * Math.PI * nodeIndex) / totalAtHop;
                         node.x = centerX + radius * Math.cos(angle);
                         node.y = centerY + radius * Math.sin(angle);
@@ -1197,19 +1443,17 @@
                     return Math.abs(targetHop - sourceHop) * hopRadius * 0.8;
                 }))
                 .force("charge", d3.forceManyBody().strength(d => {
-                    if (d.device_type === 'local_machine') return 0; // No force on fixed center
+                    if (d.device_type === 'local_machine') return 0;
                     if (d.device_type === 'internet') return -400;
                     if (d.hop_distance <= 1) return -300;
                     return -150;
                 }))
                 .force("collision", d3.forceCollide(d => getNodeSize(d.device_type) + 8))
                 .force("radial", d3.forceRadial(d => {
-                    // Gentle radial force to maintain hop-based positioning
                     return (d.hop_distance || 0) * hopRadius;
                 }, centerX, centerY).strength(0.3))
-                .alpha(0.3); // Lower alpha for gentler simulation
+                .alpha(0.3);
 
-            // Create enhanced links with cumulative status
             const links = g.append("g")
                 .selectAll("path")
                 .data(topology.links)
@@ -1225,7 +1469,6 @@
                     return 2;
                 });
 
-            // Create nodes with enhanced cumulative styling and drag behavior
             const nodes = g.append("g")
                 .selectAll("g")
                 .data(topology.nodes)
@@ -1243,7 +1486,6 @@
                     .on("drag", dragged)
                     .on("end", dragended));
 
-            // Add circles with cumulative-aware styling
             nodes.append("circle")
                 .attr("r", d => getNodeSize(d.device_type))
                 .style("fill", d => getCumulativeNodeColor(d.device_type, d.hop_distance, d.new, d.current_scan))
@@ -1265,7 +1507,6 @@
                     return "none";
                 });
 
-            // Add device icons
             nodes.append("text")
                 .attr("text-anchor", "middle")
                 .attr("dy", 5)
@@ -1273,14 +1514,12 @@
                 .style("pointer-events", "none")
                 .text(d => getDeviceIcon(d.device_type));
 
-            // Add hop distance labels
             nodes.filter(d => d.hop_distance > 0)
                 .append("text")
                 .attr("class", "hop-label")
                 .attr("dy", d => -getNodeSize(d.device_type) - 8)
                 .text(d => `H${d.hop_distance}`);
 
-            // Add status indicators for cumulative data
             nodes.filter(d => d.new)
                 .append("text")
                 .attr("text-anchor", "middle")
@@ -1300,7 +1539,6 @@
                 .style("font-weight", "bold")
                 .text(d => `×${d.scan_count}`);
 
-            // Add IP labels
             nodes.append("text")
                 .attr("class", "node-label")
                 .attr("dy", d => getNodeSize(d.device_type) + 18)
@@ -1312,7 +1550,6 @@
                     return d.ip.split('.').pop();
                 });
 
-            // Add hostname labels for important nodes
             nodes.filter(d => d.hostname !== d.ip && d.device_type !== 'wildcard' && d.hostname.length < 20)
                 .append("text")
                 .attr("class", "node-label")
@@ -1321,7 +1558,6 @@
                 .style("fill", "#ccc")
                 .text(d => d.hostname.length > 15 ? d.hostname.substring(0, 15) + "..." : d.hostname);
 
-            // Enhanced cumulative tooltips
             const tooltip = d3.select("#tooltip");
             
             nodes
@@ -1381,9 +1617,7 @@
                     tooltip.transition().duration(300).style("opacity", 0);
                 });
 
-            // Update positions
             simulation.on("tick", () => {
-                // Keep local machine fixed at center
                 topology.nodes.forEach(d => {
                     if (d.device_type === 'local_machine') {
                         d.x = centerX;
@@ -1415,7 +1649,6 @@
         }
 
         function getCumulativeNodeColor(type, hopDistance, isNew, isCurrentScan) {
-            // Base colors with cumulative status variations
             const baseColors = {
                 'router': '#e94560',
                 'gateway': '#4a90e2',  
@@ -1430,15 +1663,12 @@
             
             let color = baseColors[type] || '#9b59b6';
             
-            // Special coloring for cumulative status
             if (isNew) {
                 color = d3.rgb(color).brighter(0.5).toString();
             } else if (!isCurrentScan && type !== 'local_machine' && type !== 'internet') {
-                // Dim inactive hosts
                 color = d3.rgb(color).darker(0.5).toString();
             }
             
-            // Slightly dim colors for higher hop distances
             if (hopDistance && hopDistance > 2) {
                 color = d3.rgb(color).darker(0.2).toString();
             }
@@ -1451,7 +1681,6 @@
             const node = d3.select(`#${nodeId}`);
             if (node.empty()) return;
             
-            // Reset all nodes
             d3.selectAll('.node circle').style('stroke-width', d => {
                 if (d.device_type === 'local_machine') return 4;
                 if (d.new) return 4;
@@ -1459,19 +1688,16 @@
                 return d.discovered ? 2 : 2;
             });
             
-            // Highlight the selected node and its path
             node.select('circle')
                 .style('stroke-width', 8)
                 .style('stroke', '#fff');
             
-            // Highlight connected paths
             d3.selectAll('.link')
                 .style('opacity', d => {
                     if (d.source.id === ip || d.target.id === ip) return 1;
                     return 0.2;
                 });
             
-            // Show path to selected host
             const pathNodes = new Set();
             topology.links.forEach(link => {
                 if (link.target.id === ip) {
@@ -1483,7 +1709,6 @@
             d3.selectAll('.node circle')
                 .style('opacity', d => pathNodes.has(d.id) ? 1 : 0.4);
 
-            // Center view on the selected node
             const nodeData = topology.nodes.find(n => n.id === ip);
             if (nodeData && svg) {
                 const transform = d3.zoomTransform(svg.node());
@@ -1502,7 +1727,6 @@
                 drawCumulativeTopology();
             }
             
-            // Reset link opacity
             d3.selectAll('.link').style('opacity', 1);
             d3.selectAll('.node circle').style('opacity', 1);
         }
@@ -1516,14 +1740,12 @@
             }
         }
 
-        // Enhanced drag functions with position saving
         function dragstarted(event, d) {
-            if (d.device_type === 'local_machine') return; // Don't allow dragging center node
+            if (d.device_type === 'local_machine') return;
             if (!event.active) simulation.alphaTarget(0.1).restart();
             d.fx = d.x;
             d.fy = d.y;
             
-            // Add visual feedback
             d3.select(this).classed("dragging", true);
         }
 
@@ -1537,7 +1759,6 @@
             if (d.device_type === 'local_machine') return;
             if (!event.active) simulation.alphaTarget(0);
             
-            // Save the new position to database
             if (socket) {
                 socket.emit('save_node_position', {
                     ip: d.id,
@@ -1547,14 +1768,9 @@
                 });
             }
             
-            // Keep node fixed at dragged position
-            // Don't set fx and fy to null - keep them fixed
-            
-            // Remove visual feedback
             d3.select(this).classed("dragging", false);
         }
 
-        // Keyboard shortcuts
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && event.ctrlKey) {
                 toggleScan();
@@ -1570,7 +1786,6 @@
                 clearCumulativeData();
                 event.preventDefault();
             }
-            // Zoom shortcuts
             if (event.key === '+' && event.ctrlKey) {
                 zoomIn();
                 event.preventDefault();
@@ -1583,23 +1798,23 @@
                 zoomReset();
                 event.preventDefault();
             }
+            if (event.key === 't' && event.ctrlKey) {
+                toggleTraffic();
+                event.preventDefault();
+            }
         });
 
-        // Mouse wheel zoom (when over SVG)
         document.addEventListener('DOMContentLoaded', () => {
             initConnection();
             
-            // Auto-focus network input
             document.getElementById('network-input').focus();
             
-            // Handle window resize
             window.addEventListener('resize', () => {
                 if (topology.nodes.length > 0) {
                     setTimeout(drawCumulativeTopology, 100);
                 }
             });
             
-            // Add mouse wheel zoom support
             const topologyContainer = document.querySelector('.topology-container');
             topologyContainer.addEventListener('wheel', (event) => {
                 if (event.ctrlKey) {
