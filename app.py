@@ -8,6 +8,9 @@ Enhanced Cumulative Network Topology Scanner with Real-Time Traffic Visualizatio
 - Export/Import functionality for scan results
 - Enhanced visualization with draggable nodes and zoom
 - Real-time network traffic visualization with packet capture
+- Auto-discovery of hosts from packet capture
+- Automatic subnet expansion for gateways
+- Path-aware traffic visualization
 """
 
 from flask import Flask, render_template, send_file, request, jsonify
@@ -26,6 +29,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 import zipfile
+import queue
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'topo-scanner'
@@ -37,6 +41,7 @@ class CumulativeTopologyScanner:
         self.host_routes = {}
         self.scan_active = False
         self.traffic_capture_active = False
+        self.traffic_process = None
         self.cumulative_data = {
             'hosts': {},
             'routes': {},
@@ -44,6 +49,12 @@ class CumulativeTopologyScanner:
             'scan_history': [],
             'node_positions': {}
         }
+        # New: Track discovered hosts from traffic
+        self.traffic_discovered_hosts = set()
+        self.discovery_queue = queue.Queue()
+        self.discovery_thread = None
+        self.processed_gateways = set()
+        
         self.init_database()
         self.load_cumulative_data()
         
@@ -64,7 +75,8 @@ class CumulativeTopologyScanner:
                     first_seen TEXT,
                     last_seen TEXT,
                     scan_count INTEGER DEFAULT 1,
-                    active INTEGER DEFAULT 1
+                    active INTEGER DEFAULT 1,
+                    discovered_via TEXT DEFAULT 'scan'
                 )
             ''')
             
@@ -136,7 +148,16 @@ class CumulativeTopologyScanner:
             # Load hosts
             cursor.execute('SELECT * FROM hosts WHERE active = 1')
             for row in cursor.fetchall():
-                ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active = row
+                ip = row[0]
+                hostname = row[1]
+                mac = row[2]
+                device_type = row[3]
+                first_seen = row[4]
+                last_seen = row[5]
+                scan_count = row[6]
+                active = row[7]
+                discovered_via = row[8] if len(row) > 8 else 'scan'
+                
                 self.cumulative_data['hosts'][ip] = {
                     'ip': ip,
                     'hostname': hostname,
@@ -145,7 +166,8 @@ class CumulativeTopologyScanner:
                     'first_seen': first_seen,
                     'last_seen': last_seen,
                     'scan_count': scan_count,
-                    'active': bool(active)
+                    'active': bool(active),
+                    'discovered_via': discovered_via
                 }
             
             # Load node positions
@@ -215,15 +237,16 @@ class CumulativeTopologyScanner:
             # Export hosts
             cursor.execute('SELECT * FROM hosts')
             for row in cursor.fetchall():
-                ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active = row
+                ip = row[0]
                 export_data['hosts'][ip] = {
-                    'hostname': hostname,
-                    'mac': mac,
-                    'device_type': device_type,
-                    'first_seen': first_seen,
-                    'last_seen': last_seen,
-                    'scan_count': scan_count,
-                    'active': bool(active)
+                    'hostname': row[1],
+                    'mac': row[2],
+                    'device_type': row[3],
+                    'first_seen': row[4],
+                    'last_seen': row[5],
+                    'scan_count': row[6],
+                    'active': bool(row[7]),
+                    'discovered_via': row[8] if len(row) > 8 else 'scan'
                 }
             
             # Export routes
@@ -299,23 +322,25 @@ class CumulativeTopologyScanner:
                     else:
                         cursor.execute('''
                             INSERT INTO hosts 
-                            (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active, discovered_via)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             ip, host_data['hostname'], host_data['mac'], host_data['device_type'],
                             host_data['first_seen'], host_data['last_seen'], 
-                            host_data.get('scan_count', 1), int(host_data.get('active', True))
+                            host_data.get('scan_count', 1), int(host_data.get('active', True)),
+                            host_data.get('discovered_via', 'scan')
                         ))
                         imported_hosts += 1
                 else:
                     cursor.execute('''
                         INSERT OR REPLACE INTO hosts 
-                        (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active, discovered_via)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         ip, host_data['hostname'], host_data['mac'], host_data['device_type'],
                         host_data['first_seen'], host_data['last_seen'], 
-                        host_data.get('scan_count', 1), int(host_data.get('active', True))
+                        host_data.get('scan_count', 1), int(host_data.get('active', True)),
+                        host_data.get('discovered_via', 'scan')
                     ))
                     imported_hosts += 1
             
@@ -368,7 +393,7 @@ class CumulativeTopologyScanner:
             print(f"Error importing scan data: {e}")
             return {'success': False, 'error': str(e)}
     
-    def save_host_to_db(self, host_info, is_new=False):
+    def save_host_to_db(self, host_info, is_new=False, discovered_via='scan'):
         """Save or update host in database"""
         try:
             conn = sqlite3.connect(self.db_path)
@@ -378,11 +403,11 @@ class CumulativeTopologyScanner:
             if is_new:
                 cursor.execute('''
                     INSERT OR REPLACE INTO hosts 
-                    (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, 1)
+                    (ip, hostname, mac, device_type, first_seen, last_seen, scan_count, active, discovered_via)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
                 ''', (
                     host_info['ip'], host_info['hostname'], host_info['mac'],
-                    host_info['device_type'], current_time, current_time
+                    host_info['device_type'], current_time, current_time, discovered_via
                 ))
             else:
                 cursor.execute('''
@@ -490,14 +515,15 @@ class CumulativeTopologyScanner:
             return None
     
     def traceroute_to_host(self, ip: str) -> list:
-        """Enhanced traceroute to find exact path to host"""
+        """Enhanced traceroute to find exact path to host - FIXED for Linux"""
         try:
             if sys.platform.startswith('win'):
                 cmd = ['tracert', '-h', '15', '-w', '2000', ip]
             else:
-                cmd = ['traceroute', '-m', '15', '-w', '2', ip]
+                # FIXED: Use -n for numeric output, -q 1 for one probe per hop
+                cmd = ['traceroute', '-n', '-m', '15', '-w', '2', '-q', '1', ip]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             hops = []
             hop_number = 0
             
@@ -520,79 +546,279 @@ class CumulativeTopologyScanner:
                             'rtt': avg_rtt
                         })
                 else:
-                    hop_match = re.search(r'^\s*(\d+)\s+([^\s]+)\s+.*?(\d+\.?\d*)\s*ms', line)
+                    # FIXED: Better Linux traceroute parsing with -n flag
+                    # Format: " 1  192.168.1.1  1.234 ms"
+                    hop_match = re.search(r'^\s*(\d+)\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+(\d+\.?\d*)\s*ms', line)
                     if hop_match:
                         hop_number = int(hop_match.group(1))
-                        hop_host = hop_match.group(2)
+                        hop_ip = hop_match.group(2)
                         rtt = float(hop_match.group(3))
-                        
-                        ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', hop_host)
-                        hop_ip = ip_match.group(1) if ip_match else hop_host
                         
                         hops.append({
                             'hop': hop_number,
                             'ip': hop_ip,
-                            'hostname': self.get_hostname(hop_ip) if ip_match else hop_host,
+                            'hostname': self.get_hostname(hop_ip),
                             'rtt': rtt
                         })
-                
-                if '*' in line and hop_number > 0:
-                    hops.append({
-                        'hop': hop_number + 1,
-                        'ip': '*',
-                        'hostname': '* timeout',
-                        'rtt': 0
-                    })
-                    hop_number += 1
+                    elif re.search(r'^\s*(\d+)\s+\*', line):
+                        # Handle timeout hops
+                        hop_match_timeout = re.search(r'^\s*(\d+)', line)
+                        if hop_match_timeout:
+                            hop_number = int(hop_match_timeout.group(1))
+                            hops.append({
+                                'hop': hop_number,
+                                'ip': '*',
+                                'hostname': '* timeout',
+                                'rtt': 0
+                            })
             
             return hops
         except Exception as e:
             print(f"Traceroute error for {ip}: {e}")
             return []
     
+    def process_discovery_queue(self):
+        """Process discovered hosts from traffic capture"""
+        while self.traffic_capture_active or not self.discovery_queue.empty():
+            try:
+                ip = self.discovery_queue.get(timeout=1)
+                
+                # Check if already processed
+                if ip in self.cumulative_data['hosts'] or ip in self.traffic_discovered_hosts:
+                    continue
+                
+                self.traffic_discovered_hosts.add(ip)
+                
+                # Check if host is reachable
+                is_alive, rtt = self.ping_host(ip)
+                if is_alive:
+                    hostname = self.get_hostname(ip)
+                    mac = self.get_mac_via_arp(ip)
+                    device_type = self._detect_device_type(hostname, ip)
+                    
+                    # Check if it's a gateway
+                    if ip.endswith('.1') or ip.endswith('.254'):
+                        self._expand_subnet_for_gateway(ip)
+                    
+                    host_info = {
+                        'ip': ip,
+                        'hostname': hostname,
+                        'mac': mac,
+                        'device_type': device_type,
+                        'new': True,
+                        'scan_count': 1,
+                        'discovered_via': 'traffic'
+                    }
+                    
+                    self.active_hosts[ip] = host_info
+                    self.cumulative_data['hosts'][ip] = host_info
+                    self.save_host_to_db(host_info, True, 'traffic')
+                    
+                    # Traceroute to new host
+                    route = self.traceroute_to_host(ip)
+                    if route:
+                        self.host_routes[ip] = route
+                        self.save_route_to_db(ip, route)
+                    
+                    self.emit_update('traffic_host_discovered', {
+                        'ip': ip,
+                        'hostname': hostname,
+                        'device_type': device_type,
+                        'rtt': rtt
+                    })
+                    
+                    # Rebuild topology with new host
+                    self._build_cumulative_topology()
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Error processing discovery: {e}")
+    
+    def _expand_subnet_for_gateway(self, gateway_ip):
+        """Automatically discover subnet hosts for a gateway"""
+        try:
+            # Parse gateway network
+            network = ipaddress.IPv4Network(f"{gateway_ip}/24", strict=False)
+            
+            if str(network) in self.processed_gateways:
+                return
+                
+            self.processed_gateways.add(str(network))
+            
+            self.emit_update('subnet_expansion', {
+                'gateway': gateway_ip,
+                'network': str(network)
+            })
+            
+            # Quick scan of common hosts in subnet
+            common_hosts = list(network.hosts())[:10] + list(network.hosts())[-10:]
+            
+            discovered = 0
+            for host_ip in common_hosts:
+                host_ip_str = str(host_ip)
+                if host_ip_str not in self.cumulative_data['hosts']:
+                    is_alive, rtt = self.ping_host(host_ip_str)
+                    if is_alive:
+                        hostname = self.get_hostname(host_ip_str)
+                        mac = self.get_mac_via_arp(host_ip_str)
+                        device_type = self._detect_device_type(hostname, host_ip_str)
+                        
+                        host_info = {
+                            'ip': host_ip_str,
+                            'hostname': hostname,
+                            'mac': mac,
+                            'device_type': device_type,
+                            'new': True,
+                            'scan_count': 1,
+                            'discovered_via': 'gateway_expansion'
+                        }
+                        
+                        self.active_hosts[host_ip_str] = host_info
+                        self.cumulative_data['hosts'][host_ip_str] = host_info
+                        self.save_host_to_db(host_info, True, 'gateway_expansion')
+                        discovered += 1
+            
+            if discovered > 0:
+                self.emit_update('subnet_hosts_found', {
+                    'gateway': gateway_ip,
+                    'discovered': discovered
+                })
+                self._build_cumulative_topology()
+                
+        except Exception as e:
+            print(f"Error expanding subnet for gateway {gateway_ip}: {e}")
+    
     def capture_network_traffic(self):
-        """Capture real-time network traffic and emit to frontend"""
-        print("Starting traffic capture...")
+        """Capture real-time network traffic and emit to frontend - FIXED for Windows"""
+        print("Starting traffic capture with host discovery...")
         self.traffic_capture_active = True
         
+        # Start discovery processing thread
+        self.discovery_thread = threading.Thread(target=self.process_discovery_queue)
+        self.discovery_thread.daemon = True
+        self.discovery_thread.start()
+        
         try:
-            # Try to use tcpdump/tshark for traffic capture
             if sys.platform.startswith('win'):
-                # Windows - requires tshark/WinPcap
-                cmd = ['tshark', '-i', 'any', '-T', 'fields', '-e', 'ip.src', '-e', 'ip.dst', 
-                       '-e', 'frame.protocols', '-e', 'frame.len', '-l']
+                # FIXED: Try windump (WinPcap) or tshark for Windows
+                # Try windump first (more lightweight)
+                try:
+                    cmd = ['windump', '-n', '-l', '-q', '-i', 'any']
+                    self.traffic_process = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, bufsize=1
+                    )
+                    print("Using windump for traffic capture")
+                except FileNotFoundError:
+                    # Fall back to tshark
+                    cmd = ['tshark', '-i', 'Wi-Fi', '-T', 'fields', '-e', 'ip.src', '-e', 'ip.dst', 
+                           '-e', 'frame.protocols', '-e', 'frame.len', '-l', '-Y', 'ip']
+                    self.traffic_process = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, bufsize=1
+                    )
+                    print("Using tshark for traffic capture")
             else:
                 # Linux/Mac - requires tcpdump with proper permissions
                 cmd = ['tcpdump', '-i', 'any', '-n', '-l', '-q']
+                self.traffic_process = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, bufsize=1
+                )
+                print("Using tcpdump for traffic capture")
             
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
-                                     text=True, bufsize=1)
-            
-            for line in process.stdout:
+            # Read packets from the process
+            for line in self.traffic_process.stdout:
                 if not self.traffic_capture_active:
-                    process.terminate()
+                    self.traffic_process.terminate()
                     break
                 
                 # Parse traffic data
                 traffic_data = self.parse_traffic_line(line)
                 if traffic_data:
+                    # Add hosts to discovery queue
+                    for ip in [traffic_data['source'], traffic_data['target']]:
+                        if self._is_private_ip(ip) and ip not in self.cumulative_data['hosts']:
+                            self.discovery_queue.put(ip)
+                    
+                    # Find actual path for packet visualization
+                    path = self._find_packet_path(traffic_data['source'], traffic_data['target'])
+                    traffic_data['path'] = path
+                    
                     self.emit_update('traffic_packet', traffic_data)
                     
         except FileNotFoundError:
-            print("Traffic capture tool not found. Install tcpdump (Linux/Mac) or tshark (Windows)")
-            print("Switching to simulated traffic mode...")
-            self.simulate_traffic()
+            error_msg = "Traffic capture tool not found.\n"
+            if sys.platform.startswith('win'):
+                error_msg += "Install WinPcap and windump, or Wireshark with tshark"
+            else:
+                error_msg += "Install tcpdump: sudo apt-get install tcpdump (Linux) or brew install tcpdump (Mac)"
+            print(error_msg)
+            self.emit_update('traffic_capture_error', {'error': error_msg})
+            self.traffic_capture_active = False
         except PermissionError:
-            print("Permission denied for packet capture. Try running with sudo/administrator privileges")
-            print("Switching to simulated traffic mode...")
-            self.simulate_traffic()
+            error_msg = "Permission denied for packet capture.\n"
+            if sys.platform.startswith('win'):
+                error_msg += "Run as Administrator"
+            else:
+                error_msg += "Try: sudo chmod +x /usr/bin/tcpdump && sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/tcpdump"
+            print(error_msg)
+            self.emit_update('traffic_capture_error', {'error': error_msg})
+            self.traffic_capture_active = False
         except Exception as e:
             print(f"Traffic capture error: {e}")
-            print("Switching to simulated traffic mode...")
-            self.simulate_traffic()
+            self.emit_update('traffic_capture_error', {'error': str(e)})
+            self.traffic_capture_active = False
+    
+    def _is_private_ip(self, ip):
+        """Check if IP is private/local"""
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            return ip_obj.is_private
+        except:
+            return False
+    
+    def _find_packet_path(self, source_ip, target_ip):
+        """Find the network path between source and target for packet visualization"""
+        path = []
+        
+        # Check if we have route information for either endpoint
+        if source_ip in self.host_routes:
+            route = self.host_routes[source_ip]
+            path = [hop['ip'] for hop in route if hop['ip'] != '*']
+        elif target_ip in self.host_routes:
+            route = self.host_routes[target_ip]
+            path = [hop['ip'] for hop in route if hop['ip'] != '*']
+        else:
+            # Try to find from database
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Check for target route
+                cursor.execute('''
+                    SELECT hop_ip FROM routes 
+                    WHERE target_ip = ? 
+                    ORDER BY hop_number
+                ''', (target_ip,))
+                
+                route_rows = cursor.fetchall()
+                if route_rows:
+                    path = [row[0] for row in route_rows if row[0] != '*']
+                
+                conn.close()
+            except:
+                pass
+        
+        # If no path found, assume direct connection
+        if not path:
+            path = [source_ip, target_ip]
+        
+        return path
     
     def parse_traffic_line(self, line):
-        """Parse tcpdump/tshark output line"""
+        """Parse tcpdump/tshark/windump output line"""
         try:
             # Parse tcpdump format: timestamp IP src > dst: protocol
             ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
@@ -608,6 +834,12 @@ class CumulativeTopologyScanner:
                     protocol = 'UDP'
                 elif 'ICMP' in line.upper():
                     protocol = 'ICMP'
+                elif ':53' in line or '.53' in line:  # DNS port
+                    protocol = 'DNS'
+                elif ':80' in line or '.80' in line:
+                    protocol = 'HTTP'
+                elif ':443' in line or '.443' in line:
+                    protocol = 'HTTPS'
                 
                 # Estimate packet size
                 size = 64
@@ -627,38 +859,11 @@ class CumulativeTopologyScanner:
         
         return None
     
-    def simulate_traffic(self):
-        """Simulate network traffic when packet capture is unavailable"""
-        import random
-        
-        print("Running in simulated traffic mode...")
-        
-        while self.traffic_capture_active:
-            # Get list of known hosts
-            known_ips = list(self.cumulative_data['hosts'].keys())
-            
-            if len(known_ips) >= 2:
-                # Generate simulated traffic between known hosts
-                src = random.choice(known_ips)
-                dst = random.choice(known_ips)
-                
-                if src != dst:
-                    protocols = ['TCP', 'UDP', 'ICMP', 'HTTP', 'HTTPS', 'DNS']
-                    traffic_data = {
-                        'source': src,
-                        'target': dst,
-                        'protocol': random.choice(protocols),
-                        'size': random.randint(64, 1500),
-                        'timestamp': time.time()
-                    }
-                    self.emit_update('traffic_packet', traffic_data)
-            
-            # Random interval between packets
-            time.sleep(random.uniform(0.1, 0.5))
-    
     def start_traffic_capture(self):
         """Start traffic capture in separate thread"""
         if not self.traffic_capture_active:
+            self.traffic_discovered_hosts.clear()
+            self.processed_gateways.clear()
             capture_thread = threading.Thread(target=self.capture_network_traffic)
             capture_thread.daemon = True
             capture_thread.start()
@@ -666,6 +871,14 @@ class CumulativeTopologyScanner:
     def stop_traffic_capture(self):
         """Stop traffic capture"""
         self.traffic_capture_active = False
+        if self.traffic_process:
+            self.traffic_process.terminate()
+            self.traffic_process = None
+        
+        # Wait for discovery thread to finish
+        if self.discovery_thread and self.discovery_thread.is_alive():
+            self.discovery_thread.join(timeout=2)
+        
         self.emit_update('traffic_capture_stopped', {'message': 'Traffic capture stopped'})
     
     def discover_subnet(self, network: str):
@@ -782,7 +995,8 @@ class CumulativeTopologyScanner:
                 'mac': mac,
                 'device_type': device_type,
                 'new': is_new,
-                'scan_count': 1 if is_new else self.cumulative_data['hosts'][ip].get('scan_count', 0) + 1
+                'scan_count': 1 if is_new else self.cumulative_data['hosts'][ip].get('scan_count', 0) + 1,
+                'discovered_via': 'scan'
             }
             
             self.active_hosts[ip] = host_info
@@ -876,6 +1090,7 @@ class CumulativeTopologyScanner:
             'discovered': True,
             'cumulative': True,
             'scan_count': 999,
+            'discovered_via': 'local',
             'x': local_pos.get('x'),
             'y': local_pos.get('y'),
             'fixed': local_pos.get('fixed', False)
@@ -905,6 +1120,7 @@ class CumulativeTopologyScanner:
                         'discovered': False,
                         'rtt': hop_info['rtt'],
                         'cumulative': True,
+                        'discovered_via': 'traceroute',
                         'x': hop_pos.get('x'),
                         'y': hop_pos.get('y'),
                         'fixed': hop_pos.get('fixed', False)
@@ -931,6 +1147,7 @@ class CumulativeTopologyScanner:
                 'hop_distance': len(internet_hops) + 1,
                 'discovered': False,
                 'cumulative': True,
+                'discovered_via': 'traceroute',
                 'x': internet_pos.get('x'),
                 'y': internet_pos.get('y'),
                 'fixed': internet_pos.get('fixed', False)
@@ -988,6 +1205,7 @@ class CumulativeTopologyScanner:
                             'discovered': False,
                             'rtt': hop_info['rtt'],
                             'cumulative': True,
+                            'discovered_via': 'traceroute',
                             'x': hop_pos.get('x'),
                             'y': hop_pos.get('y'),
                             'fixed': hop_pos.get('fixed', False)
@@ -1017,6 +1235,7 @@ class CumulativeTopologyScanner:
                     'current_scan': in_current_scan,
                     'scan_count': host_info.get('scan_count', 1),
                     'cumulative': True,
+                    'discovered_via': host_info.get('discovered_via', 'scan'),
                     'x': host_pos.get('x'),
                     'y': host_pos.get('y'),
                     'fixed': host_pos.get('fixed', False)
@@ -1043,6 +1262,7 @@ class CumulativeTopologyScanner:
                     'current_scan': in_current_scan,
                     'scan_count': host_info.get('scan_count', 1),
                     'cumulative': True,
+                    'discovered_via': host_info.get('discovered_via', 'scan'),
                     'x': host_pos.get('x'),
                     'y': host_pos.get('y'),
                     'fixed': host_pos.get('fixed', False)
@@ -1089,6 +1309,9 @@ class CumulativeTopologyScanner:
                 'scan_history': [],
                 'node_positions': {}
             }
+            
+            self.traffic_discovered_hosts.clear()
+            self.processed_gateways.clear()
             
             self.emit_update('cumulative_cleared', {'message': 'All cumulative data cleared'})
             
@@ -1185,7 +1408,7 @@ def handle_save_node_position(data):
 def handle_start_traffic_capture():
     """Start real-time traffic capture"""
     scanner.start_traffic_capture()
-    emit('traffic_capture_started', {'message': 'Traffic capture started'})
+    emit('traffic_capture_started', {'message': 'Traffic capture started with auto-discovery'})
 
 @socketio.on('stop_traffic_capture')
 def handle_stop_traffic_capture():
@@ -1202,8 +1425,8 @@ def handle_connect():
 
 if __name__ == '__main__':
     os.makedirs('templates', exist_ok=True)
-    print("Enhanced Cumulative Network Topology Scanner with Traffic Visualization")
-    print("=" * 75)
+    print("Enhanced Cumulative Network Topology Scanner with Traffic Visualization and Auto-Discovery")
+    print("=" * 90)
     print("Features:")
     print("- Cumulative scan results (like Zenmap)")
     print("- Persistent SQLite database storage")
@@ -1213,6 +1436,9 @@ if __name__ == '__main__':
     print("- Draggable nodes with persistent positions")
     print("- Zoom and pan capabilities")
     print("- Real-time network traffic visualization")
+    print("- AUTO-DISCOVERY: Hosts found in traffic are automatically added to topology")
+    print("- GATEWAY EXPANSION: Automatically discovers subnet hosts when gateway is found")
+    print("- PATH-AWARE TRAFFIC: Packet animations follow actual network paths")
     print("")
     print("Make sure dashboard.html is in templates/ folder")
     print("Database will be created as: network_topology.db")
@@ -1222,9 +1448,15 @@ if __name__ == '__main__':
     print("- GET /export?positions=true - Export scan data")
     print("- POST /import - Import scan data (multipart/form-data)")
     print("")
-    print("Traffic Capture:")
-    print("- Requires tcpdump (Linux/Mac) or tshark (Windows)")
-    print("- May require administrator/root privileges")
-    print("- Falls back to simulated traffic if tools unavailable")
+    print("Traffic Capture Requirements:")
+    print("Linux/Mac: tcpdump (may require sudo or capabilities)")
+    print("  Setup: sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/tcpdump")
+    print("Windows: windump or tshark (requires WinPcap/Npcap)")
+    print("  Install: https://www.winpcap.org/ or https://nmap.org/npcap/")
+    print("")
+    print("NEW FEATURES:")
+    print("- Traffic capture now discovers and adds new hosts automatically")
+    print("- Gateway detection (.1/.254) triggers subnet expansion")
+    print("- Traffic particles follow actual discovered network paths")
     print("")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)
