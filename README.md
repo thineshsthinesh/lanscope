@@ -13,7 +13,7 @@ A web-based tool for scanning and visualizing network topology. It performs **cu
 
 ## 🖥️ Screenshots
 ### Dashboard
-![Dashboard Screenshot](https://github.com/thineshsthinesh/external/blob/main/Screenshot%202025-09-28%20184803.png)
+![Dashboard Screenshot](https://github.com/thineshsthinesh/external/blob/main/Screenshot%202025-11-14%20144038.png)
 
 ## ⚙️ Requirements
 - Python **3.8+**  
